@@ -2,6 +2,9 @@
 
 Python **FastAPI** mein bana ek modern CRM. Code simple rakha gaya hai: **koi class nahi**, sirf functions aur dictionaries.
 
+> **Google Apps Script + Google Sheets version** bhi hai: [`apps-script/`](apps-script/README.md) folder dekho.
+> Wahi app, bina server ke, database Google Sheet mein.
+
 ## Kya-kya hai
 - **Login / Sign up**: password hash karke save hota hai, 7 din tak login yaad rehta hai
 - **Smart dashboard**: "Good morning, Naam 👋", apne aap bane insights, monthly target ring, animated KPI cards with sparklines, revenue chart, sales funnel, top companies leaderboard, latest activity

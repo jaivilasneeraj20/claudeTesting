@@ -1,0 +1,734 @@
+<script>
+/* =====================================================================
+   dashboard.js — greeting, smart insights, KPIs, charts, feed.
+   ===================================================================== */
+
+let charts = []; // chart objects, destroyed before every re-draw
+
+function greeting() {
+  const h = new Date().getHours();
+  return h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+}
+
+async function renderDashboard() {
+  const s = await api("stats");
+  const pct = s.target ? Math.round((s.won_this_month / s.target) * 100) : 0;
+  const ringLength = 2 * Math.PI * 64;
+  const accent = getComputedStyle(document.documentElement).getPropertyValue("--p1").trim();
+  const kpiColors = [accent, "#06b6d4", "#f59e0b", "#22c55e"];
+  const tones = { red: "#fda4af", amber: "#fde68a", violet: "#ddd6fe", cyan: "#a5f3fc", green: "#bbf7d0" };
+
+  $("#view").innerHTML = `
+    <div class="grid g-hero" style="margin-bottom:20px">
+      <div class="card hero">
+        <h2>${greeting()}, ${esc(s.greeting_name)} 👋</h2>
+        <p>${new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" })} ·
+           ${s.tasks_today} task${s.tasks_today === 1 ? "" : "s"} today · ${s.new_contacts} new contact${s.new_contacts === 1 ? "" : "s"} this month</p>
+        <div class="insights">
+          ${s.insights.map((t, i) => `<div class="insight" style="animation-delay:${i * 90}ms"><i data-lucide="${t.icon}" style="color:${tones[t.tone]}"></i>${esc(t.text)}</div>`).join("")}
+        </div>
+      </div>
+      <div class="card ring-card">
+        <div class="ring">
+          <svg viewBox="0 0 150 150">
+            <defs><linearGradient id="ringGrad"><stop offset="0" stop-color="var(--p1)"/><stop offset="1" stop-color="var(--p2)"/></linearGradient></defs>
+            <circle class="track" cx="75" cy="75" r="64"/>
+            <circle class="bar" id="ringBar" cx="75" cy="75" r="64" stroke-dasharray="${ringLength}" stroke-dashoffset="${ringLength}"/>
+          </svg>
+          <strong><span data-count="${pct}" data-suffix="%">0%</span></strong>
+        </div>
+        <b style="font-size:16px">Monthly target</b>
+        <small>${short(s.won_this_month)} won of ${short(s.target)} · <a onclick="go('settings')" style="color:var(--p1)">change</a></small>
+      </div>
+    </div>
+
+    <div class="grid g4" style="margin-bottom:20px">
+      ${s.kpis.map((k, i) => `
+        <div class="card kpi lift" style="--c:${kpiColors[i]}">
+          <div class="kpi-top">
+            <div class="ico"><i data-lucide="${k.icon}"></i></div>
+            ${k.trend === null ? "" : `<span class="trend ${k.trend >= 0 ? "up" : "down"}"><i data-lucide="${k.trend >= 0 ? "trending-up" : "trending-down"}"></i>${Math.abs(k.trend)}%</span>`}
+          </div>
+          <small>${k.label}</small>
+          <strong data-count="${k.value}" data-format="${k.money ? "money" : ""}" data-suffix="${k.suffix || ""}">0</strong>
+          ${sparkline(k.series, kpiColors[i])}
+        </div>`).join("")}
+    </div>
+
+    <div class="grid g-main" style="margin-bottom:20px">
+      <div class="card">
+        <div class="card-head"><h3><i data-lucide="bar-chart-3"></i>Revenue & new business</h3><span class="muted" style="font-size:13px">Last 6 months</span></div>
+        <div class="chart-box"><canvas id="revChart"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3><i data-lucide="pie-chart"></i>Lead sources</h3></div>
+        <div class="chart-box"><canvas id="sourceChart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="grid g3" style="margin-bottom:20px">
+      <div class="card">
+        <div class="card-head"><h3><i data-lucide="filter"></i>Sales funnel</h3><a onclick="go('deals')">Pipeline →</a></div>
+        ${s.funnel.map((f, i) => {
+          const max = Math.max(...s.funnel.map((x) => x.value), 1);
+          return `<div class="funnel-row">
+            <div class="top"><b>${f.stage} <span class="muted">· ${f.count}</span></b><span>${short(f.value)}</span></div>
+            <div class="funnel-bar"><i style="width:${Math.max((f.value / max) * 100, 3)}%;--c:${STAGES[f.stage]};animation-delay:${i * 100}ms"></i></div>
+          </div>`;
+        }).join("")}
+      </div>
+      <div class="card">
+        <div class="card-head"><h3><i data-lucide="trophy"></i>Top companies</h3><a onclick="go('companies')">All →</a></div>
+        ${s.top_companies.map((c, i) => `
+          <div class="row click" onclick="showCompany(${c.id})">
+            <span class="rank r${i + 1}">${i + 1}</span>${avatar(c.name, "xs")}
+            <div class="grow"><b>${esc(c.name)}</b><span>${c.deals} won deal${c.deals === 1 ? "" : "s"}</span></div>
+            <b>${short(c.won)}</b>
+          </div>`).join("") || empty("trophy", "Win a deal to see your top companies")}
+      </div>
+      <div class="card">
+        <div class="card-head"><h3><i data-lucide="list-checks"></i>Up next</h3><a onclick="go('tasks')">All tasks →</a></div>
+        ${s.upcoming.map((t) => `
+          <div class="row">
+            <div class="check" onclick="toggleTask(${t.id})"><i data-lucide="check"></i></div>
+            <div class="grow"><b>${esc(t.title)}</b><span>${esc(t.contact_name || "No contact")}</span></div>
+            ${dueChip(t.due_date)}
+          </div>`).join("") || empty("party-popper", "All caught up!")}
+      </div>
+    </div>
+
+    <div class="grid g-main">
+      <div class="card">
+        <div class="card-head"><h3><i data-lucide="activity"></i>Latest activity</h3><a onclick="go('activity')">Full timeline →</a></div>
+        <div class="timeline">${s.feed.map(timelineItem).join("") || empty("activity", "No activity yet")}</div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3><i data-lucide="flame"></i>Closing soon</h3></div>
+        ${s.closing.map((d) => `
+          <div class="row click" onclick="openForm('deals', ${d.id})">
+            ${avatar(nameOf("companies", d.company_id) || d.title, "xs")}
+            <div class="grow"><b>${esc(d.title)}</b><span>${badge(d.stage, STAGES[d.stage])}</span></div>
+            <div style="text-align:right"><b>${short(d.value)}</b><div style="margin-top:4px">${dueChip(d.close_date)}</div></div>
+          </div>`).join("") || empty("inbox", "No open deals with a close date")}
+      </div>
+    </div>`;
+
+  icons();
+  countUp($("#view"));
+  requestAnimationFrame(() => ($("#ringBar").style.strokeDashoffset = ringLength * (1 - Math.min(pct, 100) / 100)));
+  drawDashboardCharts(s);
+}
+
+function drawDashboardCharts(s) {
+  const css = getComputedStyle(document.documentElement);
+  const p1 = css.getPropertyValue("--p1").trim();
+  const p2 = css.getPropertyValue("--p2").trim();
+  Chart.defaults.color = css.getPropertyValue("--muted").trim();
+  Chart.defaults.borderColor = css.getPropertyValue("--border").trim();
+  Chart.defaults.font.family = "Inter, system-ui, sans-serif";
+
+  const ctx = $("#revChart").getContext("2d");
+  const fill = ctx.createLinearGradient(0, 0, 0, 290);
+  fill.addColorStop(0, p1 + "cc");
+  fill.addColorStop(1, p1 + "22");
+  const moneyTip = { callbacks: { label: (c) => ` ${c.dataset.label}: ${money(c.raw)}` } };
+
+  charts.push(new Chart(ctx, {
+    data: {
+      labels: s.months,
+      datasets: [
+        { type: "bar", label: "Revenue won", data: s.revenue, backgroundColor: fill, borderRadius: 10, barThickness: 34, order: 2 },
+        { type: "line", label: "New pipeline added", data: s.added_value, borderColor: p2, backgroundColor: p2, borderWidth: 3,
+          cubicInterpolationMode: "monotone", pointRadius: 4, pointBackgroundColor: "#fff", order: 1 },
+      ],
+    },
+    options: {
+      maintainAspectRatio: false, interaction: { mode: "index", intersect: false },
+      plugins: { legend: { position: "top", align: "end", labels: { usePointStyle: true, boxWidth: 8 } }, tooltip: moneyTip },
+      scales: { y: { ticks: { callback: short }, grid: { drawTicks: false } }, x: { grid: { display: false } } },
+    },
+  }));
+
+  const palette = [p1, p2, "#f59e0b", "#22c55e", "#f43f5e", "#a855f7"];
+  charts.push(new Chart($("#sourceChart"), {
+    type: "doughnut",
+    data: { labels: Object.keys(s.sources), datasets: [{ data: Object.values(s.sources), backgroundColor: palette, borderWidth: 0, spacing: 3, borderRadius: 8 }] },
+    options: { maintainAspectRatio: false, cutout: "70%", plugins: { legend: { position: "bottom", labels: { usePointStyle: true, padding: 14, boxWidth: 8 } } } },
+  }));
+}
+
+// one line of the activity timeline (used on dashboard, drawer and activity page)
+function timelineItem(a, i = 0) {
+  const look = ACTIVITY[a.type] || ACTIVITY.Note;
+  const who = a.contact_name || nameOf("contacts", a.contact_id);
+  return `<div class="tl-item" style="animation-delay:${Math.min(i, 10) * 40}ms">
+    <div class="tl-icon" style="--c:${look.color}"><i data-lucide="${look.icon}"></i></div>
+    <div class="tl-body">
+      <p>${esc(a.note)}</p>
+      <span>${a.type}${who ? ` · <b>${esc(who)}</b>` : ""} · ${timeAgo(a.created_at)}</span>
+    </div>
+  </div>`;
+}
+
+/* =====================================================================
+   contacts.js — contacts table + contact profile drawer.
+   ===================================================================== */
+
+function renderContacts() {
+  $("#view").innerHTML = `
+    <div class="toolbar">
+      <div class="filter"><i data-lucide="search"></i><input id="search" placeholder="Search name, email, phone, company…"></div>
+      <div class="chips">${["All", "🔥 Hot", ...Object.keys(STATUS)].map((c) => `<button data-chip="${c}">${c}</button>`).join("")}</div>
+      <div class="end">
+        <button class="btn btn-ghost sm" onclick="importContacts()"><i data-lucide="upload"></i>Import</button>
+        <button class="btn btn-ghost sm" onclick="exportCsv('contacts')"><i data-lucide="download"></i>Export</button>
+      </div>
+    </div>
+    <div id="list"></div>`;
+  bindToolbar(drawContacts);
+  drawContacts();
+}
+
+function drawContacts() {
+  const rows = state.data.contacts.filter((c) => {
+    const chipOk = state.chip === "All" || c.status === state.chip || (state.chip === "🔥 Hot" && leadScore(c) >= 70);
+    return chipOk && matches(c.name, c.email, c.phone, nameOf("companies", c.company_id));
+  });
+
+  $("#list").innerHTML = `<div class="card table-wrap">${rows.length ? `
+    <table>
+      <thead><tr><th>Name</th><th>Company</th><th>Status</th><th>Lead score</th><th>Deals</th><th>Last activity</th><th></th></tr></thead>
+      <tbody>${rows.map((c, i) => {
+        const deals = state.data.deals.filter((d) => d.contact_id === c.id);
+        const last = state.data.activities.find((a) => a.contact_id === c.id);
+        const score = leadScore(c);
+        const tag = scoreTag(score);
+        return `<tr onclick="showContact(${c.id})" style="animation-delay:${Math.min(i, 15) * 25}ms">
+          <td><div class="person">${avatar(c.name)}<div><b>${esc(c.name)}</b><span>${esc(c.email || c.phone || "—")}</span></div></div></td>
+          <td>${esc(nameOf("companies", c.company_id) || "—")}</td>
+          <td>${badge(c.status, STATUS[c.status])}</td>
+          <td><div class="score" style="--c:${tag.color}"><div class="progress"><i style="width:${score}%"></i></div>${tag.label}</div></td>
+          <td><b>${deals.length}</b> <span class="muted">· ${short(sum(deals, "value"))}</span></td>
+          <td class="muted">${last ? timeAgo(last.created_at) : "—"}</td>
+          <td><div class="row-actions">
+            <button class="icon-btn sm" title="Edit" onclick="event.stopPropagation(); openForm('contacts', ${c.id})"><i data-lucide="pencil"></i></button>
+            <button class="icon-btn sm danger" title="Delete" onclick="event.stopPropagation(); removeRow('contacts', ${c.id})"><i data-lucide="trash-2"></i></button>
+          </div></td>
+        </tr>`;
+      }).join("")}</tbody>
+    </table>` : empty("user-search", "No contacts found")}</div>`;
+  icons();
+}
+
+// ---------- contact profile (right drawer) ----------
+function showContact(id) {
+  const c = find("contacts", id);
+  if (!c) return;
+  state.drawer = { type: "contact", id };
+  const deals = state.data.deals.filter((d) => d.contact_id === id);
+  const tasks = state.data.tasks.filter((t) => t.contact_id === id);
+  const acts = state.data.activities.filter((a) => a.contact_id === id);
+  const score = leadScore(c);
+  const tag = scoreTag(score);
+  const phone = (c.phone || "").replace(/[^\d]/g, "");
+
+  openDrawer(`
+    <div class="d-cover"><button class="icon-btn" onclick="closeDrawer()"><i data-lucide="x"></i></button></div>
+    <div class="d-body">
+      ${avatar(c.name, "lg")}
+      <h2>${esc(c.name)}</h2>
+      <div class="d-sub">
+        ${badge(c.status, STATUS[c.status])}
+        <span class="chip" style="color:${tag.color}">${tag.label} · ${score}</span>
+        ${c.company_id ? `<a class="chip" onclick="showCompany(${c.company_id})"><i data-lucide="building-2"></i>${esc(nameOf("companies", c.company_id))}</a>` : ""}
+        <span class="chip"><i data-lucide="radio"></i>${esc(c.source)}</span>
+      </div>
+
+      <div class="quick">
+        <a class="btn btn-ghost sm" href="tel:${esc(c.phone)}" ${phone ? "" : "hidden"} onclick="quickLog(${id}, 'Call', 'Made a phone call')"><i data-lucide="phone"></i>Call</a>
+        <a class="btn btn-ghost sm" href="https://wa.me/${phone}" target="_blank" ${phone ? "" : "hidden"} onclick="quickLog(${id}, 'WhatsApp', 'Sent a WhatsApp message')"><i data-lucide="message-circle"></i>WhatsApp</a>
+        <a class="btn btn-ghost sm" href="mailto:${esc(c.email)}" ${c.email ? "" : "hidden"} onclick="quickLog(${id}, 'Email', 'Sent an email')"><i data-lucide="mail"></i>Email</a>
+        <button class="btn btn-ghost sm" onclick="openForm('contacts', ${id})"><i data-lucide="pencil"></i>Edit</button>
+      </div>
+
+      <div class="d-stats">
+        <div><b>${deals.length}</b><span>Deals</span></div>
+        <div><b>${short(sum(deals.filter((d) => d.stage === "Won"), "value"))}</b><span>Won</span></div>
+        <div><b>${tasks.filter((t) => !t.done).length}</b><span>Open tasks</span></div>
+      </div>
+
+      <div class="log-box">
+        <div class="chips" id="logType">${["Call", "Email", "Meeting", "WhatsApp", "Note"].map((t, i) =>
+          `<button class="${i === 0 ? "on" : ""}" data-type="${t}"><i data-lucide="${ACTIVITY[t].icon}"></i>${t}</button>`).join("")}</div>
+        <textarea id="logNote" placeholder="What happened? e.g. Discussed pricing, sending proposal tomorrow"></textarea>
+        <button class="btn btn-primary sm" onclick="logFromDrawer(${id})"><i data-lucide="send"></i>Log activity</button>
+      </div>
+
+      <div class="d-section">
+        <h4>Deals <a class="chip" onclick="openForm('deals', null, {contact_id: ${id}, company_id: ${c.company_id || "null"}})"><i data-lucide="plus"></i>Add</a></h4>
+        ${deals.map((d) => `<div class="row click" onclick="openForm('deals', ${d.id})">
+          <div class="grow"><b>${esc(d.title)}</b><span>${fdate(d.close_date)}</span></div>
+          ${badge(d.stage, STAGES[d.stage])}<b>${short(d.value)}</b></div>`).join("") || `<p class="muted" style="font-size:13px">No deals yet</p>`}
+      </div>
+
+      <div class="d-section">
+        <h4>Tasks <a class="chip" onclick="openForm('tasks', null, {contact_id: ${id}})"><i data-lucide="plus"></i>Add</a></h4>
+        ${tasks.map((t) => `<div class="row ${t.done ? "done" : ""}">
+          <div class="check" onclick="toggleTask(${t.id})"><i data-lucide="check"></i></div>
+          <div class="grow"><b>${esc(t.title)}</b></div>${dueChip(t.due_date)}</div>`).join("") || `<p class="muted" style="font-size:13px">No tasks</p>`}
+      </div>
+
+      <div class="d-section">
+        <h4>Timeline</h4>
+        <div class="timeline">${acts.map(timelineItem).join("") || `<p class="muted" style="font-size:13px">No activity yet. Log your first call above!</p>`}</div>
+      </div>
+    </div>`);
+
+  $$("#logType button").forEach((b) => (b.onclick = () => {
+    $$("#logType button").forEach((x) => x.classList.remove("on"));
+    b.classList.add("on");
+  }));
+}
+
+async function logFromDrawer(contactId) {
+  const note = $("#logNote").value.trim();
+  if (!note) return toast("Write a short note first", "err");
+  const type = $("#logType .on").dataset.type;
+  await api("activities", "POST", { type, note, contact_id: contactId });
+  toast(`${type} logged`);
+  await refresh();
+}
+
+// Clicking Call / WhatsApp / Email also saves it on the timeline.
+function quickLog(contactId, type, note) {
+  api("activities", "POST", { type, note, contact_id: contactId }).then(refresh);
+}
+
+// ---------- CSV import ----------
+function importContacts() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".csv,text/csv";
+  input.onchange = async () => {
+    const text = await input.files[0].text();
+    try {
+      const result = await api("import/contacts", "POST", { csv: text });
+      toast(`${result.added} contacts imported`);
+      await refresh();
+    } catch (err) {
+      toast(err.message, "err");
+    }
+  };
+  input.click();
+}
+
+/* =====================================================================
+   companies.js — company cards + company drawer.
+   ===================================================================== */
+
+function renderCompanies() {
+  $("#view").innerHTML = `
+    <div class="toolbar">
+      <div class="filter"><i data-lucide="search"></i><input id="search" placeholder="Search companies, industry, city…"></div>
+      <div class="chips">${["All", ...INDUSTRIES.slice(0, 6)].map((c) => `<button data-chip="${c}">${c}</button>`).join("")}</div>
+      <div class="end"><button class="btn btn-ghost sm" onclick="exportCsv('companies')"><i data-lucide="download"></i>Export</button></div>
+    </div>
+    <div id="list"></div>`;
+  bindToolbar(drawCompanies);
+  drawCompanies();
+}
+
+function drawCompanies() {
+  const rows = state.data.companies.filter((c) =>
+    (state.chip === "All" || c.industry === state.chip) && matches(c.name, c.industry, c.city));
+
+  $("#list").innerHTML = rows.length ? `<div class="grid cards">${rows.map((c, i) => {
+    const deals = state.data.deals.filter((d) => d.company_id === c.id);
+    const people = state.data.contacts.filter((p) => p.company_id === c.id);
+    return `<div class="card company lift" onclick="showCompany(${c.id})" style="animation-delay:${Math.min(i, 12) * 40}ms">
+      <div class="top">
+        ${avatar(c.name)}
+        <div style="flex:1;min-width:0"><h4>${esc(c.name)}</h4><span class="muted" style="font-size:13px">${esc(c.industry || "—")}</span></div>
+        <div class="row-actions">
+          <button class="icon-btn sm" onclick="event.stopPropagation(); openForm('companies', ${c.id})"><i data-lucide="pencil"></i></button>
+          <button class="icon-btn sm danger" onclick="event.stopPropagation(); removeRow('companies', ${c.id})"><i data-lucide="trash-2"></i></button>
+        </div>
+      </div>
+      <div class="meta">
+        <div><i data-lucide="map-pin"></i>${esc(c.city || "—")}</div>
+        <div><i data-lucide="globe"></i>${esc(c.website || "—")}</div>
+      </div>
+      <div style="display:flex">${people.slice(0, 5).map((p) => `<span title="${esc(p.name)}" style="margin-right:-8px">${avatar(p.name, "xs")}</span>`).join("")}</div>
+      <div class="mini-stats">
+        <div><b>${people.length}</b><span>Contacts</span></div>
+        <div><b>${deals.filter(isOpen).length}</b><span>Open deals</span></div>
+        <div><b>${short(sum(deals.filter((d) => d.stage === "Won"), "value"))}</b><span>Won</span></div>
+      </div>
+    </div>`;
+  }).join("")}</div>` : `<div class="card">${empty("building-2", "No companies found")}</div>`;
+  icons();
+}
+
+function showCompany(id) {
+  const c = find("companies", id);
+  if (!c) return;
+  state.drawer = { type: "company", id };
+  const deals = state.data.deals.filter((d) => d.company_id === id);
+  const people = state.data.contacts.filter((p) => p.company_id === id);
+  const site = c.website && !c.website.startsWith("http") ? "https://" + c.website : c.website;
+
+  openDrawer(`
+    <div class="d-cover"><button class="icon-btn" onclick="closeDrawer()"><i data-lucide="x"></i></button></div>
+    <div class="d-body">
+      ${avatar(c.name, "lg")}
+      <h2>${esc(c.name)}</h2>
+      <div class="d-sub">
+        <span class="chip"><i data-lucide="briefcase"></i>${esc(c.industry || "—")}</span>
+        <span class="chip"><i data-lucide="map-pin"></i>${esc(c.city || "—")}</span>
+      </div>
+      <div class="quick">
+        <a class="btn btn-ghost sm" href="${esc(site)}" target="_blank" ${site ? "" : "hidden"}><i data-lucide="globe"></i>Website</a>
+        <a class="btn btn-ghost sm" href="tel:${esc(c.phone)}" ${c.phone ? "" : "hidden"}><i data-lucide="phone"></i>Call</a>
+        <button class="btn btn-ghost sm" onclick="openForm('companies', ${id})"><i data-lucide="pencil"></i>Edit</button>
+      </div>
+      <div class="d-stats">
+        <div><b>${people.length}</b><span>Contacts</span></div>
+        <div><b>${short(sum(deals.filter(isOpen), "value"))}</b><span>In pipeline</span></div>
+        <div><b>${short(sum(deals.filter((d) => d.stage === "Won"), "value"))}</b><span>Won</span></div>
+      </div>
+      <div class="d-section">
+        <h4>People <a class="chip" onclick="openForm('contacts', null, {company_id: ${id}})"><i data-lucide="plus"></i>Add</a></h4>
+        ${people.map((p) => `<div class="row click" onclick="showContact(${p.id})">${avatar(p.name, "xs")}
+          <div class="grow"><b>${esc(p.name)}</b><span>${esc(p.email)}</span></div>${badge(p.status, STATUS[p.status])}</div>`).join("")
+          || `<p class="muted" style="font-size:13px">No contacts yet</p>`}
+      </div>
+      <div class="d-section">
+        <h4>Deals <a class="chip" onclick="openForm('deals', null, {company_id: ${id}})"><i data-lucide="plus"></i>Add</a></h4>
+        ${deals.map((d) => `<div class="row click" onclick="openForm('deals', ${d.id})">
+          <div class="grow"><b>${esc(d.title)}</b><span>${fdate(d.close_date)}</span></div>
+          ${badge(d.stage, STAGES[d.stage])}<b>${short(d.value)}</b></div>`).join("") || `<p class="muted" style="font-size:13px">No deals yet</p>`}
+      </div>
+    </div>`);
+}
+
+/* =====================================================================
+   deals.js — drag & drop sales pipeline. Moving a deal to "Won" = 🎉
+   ===================================================================== */
+
+function renderDeals() {
+  const open = state.data.deals.filter(isOpen);
+  const weighted = open.reduce((total, d) => total + (d.value * PROBABILITY[d.stage]) / 100, 0);
+  const won = state.data.deals.filter((d) => d.stage === "Won");
+
+  $("#view").innerHTML = `
+    <div class="toolbar">
+      <div class="filter"><i data-lucide="search"></i><input id="search" placeholder="Search deals, company, contact…"></div>
+      <div class="stat-pill"><small>Open pipeline</small><b>${short(sum(open, "value"))}</b></div>
+      <div class="stat-pill"><small>Weighted forecast</small><b>${short(weighted)}</b></div>
+      <div class="stat-pill"><small>Won so far</small><b style="color:var(--green)">${short(sum(won, "value"))}</b></div>
+      <div class="end"><button class="btn btn-ghost sm" onclick="exportCsv('deals')"><i data-lucide="download"></i>Export</button></div>
+    </div>
+    <div id="list"></div>`;
+  bindToolbar(drawDeals);
+  drawDeals();
+}
+
+function drawDeals() {
+  const rows = state.data.deals.filter((d) =>
+    matches(d.title, nameOf("companies", d.company_id), nameOf("contacts", d.contact_id)));
+
+  $("#list").innerHTML = `<div class="kanban">${Object.entries(STAGES).map(([stage, color]) => {
+    const list = rows.filter((d) => d.stage === stage);
+    return `<div class="col" data-stage="${stage}" style="--c:${color}">
+      <div class="col-head"><i></i>${stage}<em>${list.length}</em></div>
+      <div class="col-sum"><b>${short(sum(list, "value"))}</b><span>${PROBABILITY[stage]}% win chance</span></div>
+      ${list.map((d, i) => dealCard(d, color, i)).join("") || `<p class="muted" style="font-size:12.5px;text-align:center;padding:20px 0">Drop deals here</p>`}
+    </div>`;
+  }).join("")}</div>
+  <div class="dropbar">
+    <div class="drop-zone" data-stage="Won" style="--c:${STAGES.Won}"><i data-lucide="party-popper"></i>Drop here to mark as Won</div>
+    <div class="drop-zone" data-stage="Lost" style="--c:${STAGES.Lost}"><i data-lucide="x-circle"></i>Lost</div>
+  </div>`;
+  icons();
+  enableDragAndDrop();
+}
+
+function dealCard(d, color, i) {
+  const person = nameOf("contacts", d.contact_id);
+  return `<div class="deal" draggable="true" data-id="${d.id}" onclick="openForm('deals', ${d.id})" style="--c:${color};animation-delay:${i * 40}ms">
+    <b>${esc(d.title)}</b>
+    <div class="val">${money(d.value)}</div>
+    <div class="muted" style="font-size:12.5px;margin-top:2px">${esc(nameOf("companies", d.company_id) || "No company")}</div>
+    <div class="progress"><i style="width:${PROBABILITY[d.stage]}%"></i></div>
+    <div class="foot">
+      ${isOpen(d) ? dueChip(d.close_date) : `<span class="chip">${fdate(d.close_date)}</span>`}
+      ${person ? `<span title="${esc(person)}">${avatar(person, "xs")}</span>` : ""}
+    </div>
+  </div>`;
+}
+
+function enableDragAndDrop() {
+  $$(".deal").forEach((card) => {
+    card.ondragstart = (e) => {
+      e.dataTransfer.setData("id", card.dataset.id);
+      card.classList.add("dragging");
+      document.body.classList.add("dragging-deal"); // shows the Won / Lost drop zones
+    };
+    card.ondragend = () => {
+      card.classList.remove("dragging");
+      document.body.classList.remove("dragging-deal");
+    };
+  });
+
+  $$(".col, .drop-zone").forEach((col) => {
+    col.ondragover = (e) => { e.preventDefault(); col.classList.add("over"); };
+    col.ondragleave = () => col.classList.remove("over");
+    col.ondrop = async (e) => {
+      col.classList.remove("over");
+      document.body.classList.remove("dragging-deal");
+      const deal = find("deals", Number(e.dataTransfer.getData("id")));
+      const stage = col.dataset.stage;
+      if (!deal || deal.stage === stage) return;
+
+      deal.stage = stage; // move it on screen right away, then save
+      drawDeals();
+      await api(`deals/${deal.id}`, "PUT", { stage });
+      if (stage === "Won") celebrate(deal.title);
+      else toast(`"${deal.title}" moved to ${stage}`);
+      await refresh();
+    };
+  });
+}
+
+/* =====================================================================
+   tasks.js — task list (grouped) and a month calendar.
+   ===================================================================== */
+
+let taskView = "list";        // "list" or "calendar"
+let calMonth = new Date();    // month shown in the calendar
+
+function renderTasks() {
+  $("#view").innerHTML = `
+    <div class="toolbar">
+      <div class="filter"><i data-lucide="search"></i><input id="search" placeholder="Search tasks…"></div>
+      <div class="chips">${["All", "Pending", "Done"].map((c) => `<button data-chip="${c}">${c}</button>`).join("")}</div>
+      <div class="end chips" id="viewSwitch">
+        <button data-view="list" class="${taskView === "list" ? "on" : ""}"><i data-lucide="list"></i>List</button>
+        <button data-view="calendar" class="${taskView === "calendar" ? "on" : ""}"><i data-lucide="calendar-days"></i>Calendar</button>
+      </div>
+    </div>
+    <div id="list"></div>`;
+  $$("#viewSwitch button").forEach((b) => (b.onclick = () => { taskView = b.dataset.view; renderTasks(); }));
+  bindToolbar(drawTasks);
+  drawTasks();
+}
+
+function drawTasks() {
+  const rows = state.data.tasks.filter((t) =>
+    (state.chip === "All" || (state.chip === "Done") === !!t.done) && matches(t.title, nameOf("contacts", t.contact_id)));
+  taskView === "calendar" ? drawCalendar(rows) : drawTaskList(rows);
+  icons();
+}
+
+function drawTaskList(rows) {
+  const today = todayISO();
+  const groups = [
+    ["Overdue", "alarm-clock", rows.filter((t) => !t.done && t.due_date && t.due_date < today)],
+    ["Today", "sun", rows.filter((t) => !t.done && t.due_date === today)],
+    ["Upcoming", "calendar-clock", rows.filter((t) => !t.done && t.due_date > today)],
+    ["No date", "inbox", rows.filter((t) => !t.done && !t.due_date)],
+    ["Completed", "check-check", rows.filter((t) => t.done)],
+  ].filter((g) => g[2].length);
+
+  $("#list").innerHTML = groups.map(([title, icon, list]) => `
+    <div class="group-title"><i data-lucide="${icon}"></i>${title}<em>${list.length}</em></div>
+    <div class="card table-wrap">${list.sort((a, b) => (a.due_date || "").localeCompare(b.due_date || "")).map((t, i) => `
+      <div class="task ${t.done ? "done" : ""}" style="animation-delay:${i * 30}ms">
+        <div class="check" onclick="toggleTask(${t.id})"><i data-lucide="check"></i></div>
+        <div class="body"><b>${esc(t.title)}</b>
+          <div class="chips-row">
+            ${dueChip(t.due_date)}
+            ${t.contact_id ? `<a class="chip" onclick="showContact(${t.contact_id})"><i data-lucide="user"></i>${esc(nameOf("contacts", t.contact_id))}</a>` : ""}
+          </div>
+        </div>
+        ${badge(t.priority, PRIORITY[t.priority])}
+        <div class="row-actions">
+          <button class="icon-btn sm" onclick="openForm('tasks', ${t.id})"><i data-lucide="pencil"></i></button>
+          <button class="icon-btn sm danger" onclick="removeRow('tasks', ${t.id})"><i data-lucide="trash-2"></i></button>
+        </div>
+      </div>`).join("")}
+    </div>`).join("") || `<div class="card">${empty("check-check", "No tasks here. Enjoy your day! ☕")}</div>`;
+}
+
+function drawCalendar(rows) {
+  const year = calMonth.getFullYear();
+  const month = calMonth.getMonth();
+  const first = new Date(year, month, 1);
+  const start = new Date(year, month, 1 - ((first.getDay() + 6) % 7)); // grid starts on Monday
+  const today = todayISO();
+
+  let cells = "";
+  for (let i = 0; i < 42; i++) {
+    const day = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+    const iso = isoOf(day);
+    const events = [
+      ...rows.filter((t) => t.due_date === iso).map((t) =>
+        `<div class="ev ${t.done ? "done" : ""}" style="--c:${PRIORITY[t.priority]}" onclick="event.stopPropagation(); openForm('tasks', ${t.id})">${esc(t.title)}</div>`),
+      ...state.data.deals.filter((d) => isOpen(d) && d.close_date === iso).map((d) =>
+        `<div class="ev" style="--c:#a855f7" onclick="event.stopPropagation(); openForm('deals', ${d.id})">💰 ${esc(d.title)}</div>`),
+    ];
+    cells += `<div class="day ${day.getMonth() !== month ? "other" : ""} ${iso === today ? "today" : ""}" onclick="openForm('tasks', null, {due_date: '${iso}'})">
+      <span class="n">${day.getDate()}</span>
+      ${events.slice(0, 3).join("")}${events.length > 3 ? `<span class="ev-more">+${events.length - 3} more</span>` : ""}
+    </div>`;
+  }
+
+  $("#list").innerHTML = `<div class="card">
+    <div class="cal-head">
+      <h3>${first.toLocaleDateString("en-IN", { month: "long", year: "numeric" })}</h3>
+      <button class="icon-btn sm" onclick="moveMonth(-1)"><i data-lucide="chevron-left"></i></button>
+      <button class="icon-btn sm" onclick="moveMonth(1)"><i data-lucide="chevron-right"></i></button>
+      <button class="btn btn-ghost sm" onclick="calMonth = new Date(); drawTasks()">Today</button>
+      <span class="muted" style="margin-left:auto;font-size:12.5px">Click a day to add a task · 💰 = deal closing</span>
+    </div>
+    <div class="calendar">${["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => `<div class="dow">${d}</div>`).join("")}${cells}</div>
+  </div>`;
+}
+
+function moveMonth(step) {
+  calMonth = new Date(calMonth.getFullYear(), calMonth.getMonth() + step, 1);
+  drawTasks();
+}
+
+async function toggleTask(id) {
+  const task = find("tasks", id);
+  await api(`tasks/${id}`, "PUT", { done: !task.done });
+  toast(task.done ? "Task reopened" : "Task completed ✅");
+  await refresh();
+}
+
+/* =====================================================================
+   activity.js — full timeline of calls, emails, meetings and updates.
+   ===================================================================== */
+
+function renderActivity() {
+  $("#view").innerHTML = `
+    <div class="toolbar">
+      <div class="filter"><i data-lucide="search"></i><input id="search" placeholder="Search notes or contact…"></div>
+      <div class="chips">${["All", ...Object.keys(ACTIVITY)].map((c) =>
+        `<button data-chip="${c}">${c === "All" ? "" : `<i data-lucide="${ACTIVITY[c].icon}"></i>`}${c}</button>`).join("")}</div>
+    </div>
+    <div id="list"></div>`;
+  bindToolbar(drawActivity);
+  drawActivity();
+}
+
+function drawActivity() {
+  const rows = state.data.activities
+    .filter((a) => (state.chip === "All" || a.type === state.chip) && matches(a.note, nameOf("contacts", a.contact_id)))
+    .sort((a, b) => b.created_at.localeCompare(a.created_at));
+
+  // group by day: "Today", "Yesterday", "12 Sep"
+  const groups = {};
+  rows.forEach((a) => {
+    const d = daysFromToday(a.created_at);
+    const label = d === 0 ? "Today" : d === -1 ? "Yesterday" : fdate(a.created_at);
+    (groups[label] = groups[label] || []).push(a);
+  });
+
+  $("#list").innerHTML = Object.entries(groups).map(([label, list]) => `
+    <div class="group-title"><i data-lucide="calendar"></i>${label}<em>${list.length}</em></div>
+    <div class="card"><div class="timeline">${list.map(timelineItem).join("")}</div></div>`).join("")
+    || `<div class="card">${empty("activity", "No activity found")}</div>`;
+  icons();
+}
+
+/* =====================================================================
+   settings.js — profile, monthly target, look & feel, data export.
+   ===================================================================== */
+
+const ACCENTS = {
+  Violet: ["#7c5cff", "#22d3ee"],
+  Ocean: ["#2563eb", "#06b6d4"],
+  Emerald: ["#059669", "#a3e635"],
+  Sunset: ["#f43f5e", "#f59e0b"],
+  Candy: ["#d946ef", "#fb7185"],
+  Gold: ["#d97706", "#facc15"],
+};
+
+function applyAccent(name) {
+  const [p1, p2] = ACCENTS[name] || ACCENTS.Violet;
+  document.documentElement.style.setProperty("--p1", p1);
+  document.documentElement.style.setProperty("--p2", p2);
+  try { localStorage.setItem("accent", name); } catch {}
+}
+function savedAccent() {
+  try { return localStorage.getItem("accent") || "Violet"; } catch { return "Violet"; }
+}
+
+function renderSettings() {
+  const me = state.me;
+  const theme = document.documentElement.dataset.theme;
+  $("#view").innerHTML = `
+    <div class="grid g-main">
+      <div class="stack">
+        <div class="card">
+          <div class="card-head"><h3><i data-lucide="user-round"></i>Your profile</h3></div>
+          <form id="profileForm" class="form-grid">
+            <label>Name<input name="name" value="${esc(me.name)}" required></label>
+            <label>Email<input value="${esc(me.email)}" disabled></label>
+            <label class="full">Monthly sales target (₹)<input name="target" type="number" min="0" step="1000" value="${me.target}"></label>
+            <div class="full"><button class="btn btn-primary"><i data-lucide="check"></i>Save profile</button></div>
+          </form>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3><i data-lucide="palette"></i>Look & feel</h3></div>
+          <div class="setting-row">
+            <div><b>Theme</b><span>Dark looks premium, light is great in daylight</span></div>
+            <div class="chips" id="themeChips">
+              <button data-theme="dark" class="${theme === "dark" ? "on" : ""}"><i data-lucide="moon"></i>Dark</button>
+              <button data-theme="light" class="${theme === "light" ? "on" : ""}"><i data-lucide="sun"></i>Light</button>
+            </div>
+          </div>
+          <div class="setting-row" style="align-items:flex-start;flex-direction:column">
+            <div><b>Accent colour</b><span>Changes buttons, charts and highlights everywhere</span></div>
+            <div class="swatches">${Object.entries(ACCENTS).map(([name, [a, b]]) =>
+              `<div class="swatch ${savedAccent() === name ? "on" : ""}" title="${name}" data-accent="${name}" style="background:linear-gradient(135deg, ${a}, ${b})"></div>`).join("")}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="stack">
+        <div class="card">
+          <div class="card-head"><h3><i data-lucide="database"></i>Your data</h3></div>
+          ${["contacts", "companies", "deals", "tasks", "activities"].map((t) => `
+            <div class="setting-row">
+              <div><b style="text-transform:capitalize">${t}</b><span>${state.data[t].length} records</span></div>
+              <button class="btn btn-ghost sm" onclick="exportCsv('${t}')"><i data-lucide="download"></i>CSV</button>
+            </div>`).join("")}
+          <div class="setting-row">
+            <div><b>Import contacts</b><span>CSV with name, email, phone, company, status, source</span></div>
+            <button class="btn btn-primary sm" onclick="importContacts()"><i data-lucide="upload"></i>Import</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3><i data-lucide="keyboard"></i>Keyboard shortcuts</h3></div>
+          ${[["Ctrl + K", "Search & quick actions"], ["N", "Add new item on this page"], ["G then D / C / P / T", "Go to Dashboard / Contacts / Pipeline / Tasks"], ["Esc", "Close any window"]]
+            .map(([k, text]) => `<div class="shortcut"><span>${text}</span><kbd>${k}</kbd></div>`).join("")}
+        </div>
+      </div>
+    </div>`;
+  icons();
+
+  $("#profileForm").onsubmit = async (e) => {
+    e.preventDefault();
+    state.me = await api("me", "PUT", Object.fromEntries(new FormData(e.target)));
+    showMe();
+    toast("Profile saved");
+  };
+  $$("#themeChips button").forEach((b) => (b.onclick = () => { setTheme(b.dataset.theme); renderSettings(); }));
+  $$(".swatch").forEach((s) => (s.onclick = () => { applyAccent(s.dataset.accent); renderSettings(); toast(`${s.dataset.accent} theme applied`); }));
+}
+</script>
