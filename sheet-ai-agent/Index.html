@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <style>
+    :root {
+      --bg: #f5f6fa; --card: #fff; --text: #1f2330; --muted: #7a8194;
+      --accent: #4f46e5; --user: #4f46e5; --bot: #fff; --border: #e3e5ee;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #11131a; --card: #1a1d27; --text: #e8eaf2; --muted: #8b92a8; --bot: #1f2330; --border: #2a2e3b; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+    .app { max-width: 820px; height: 100vh; margin: 0 auto; display: flex; flex-direction: column; }
+
+    header { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+    header .logo { width: 36px; height: 36px; border-radius: 10px; background: var(--accent); color: #fff; display: grid; place-items: center; font-size: 20px; }
+    header h1 { font-size: 17px; margin: 0; }
+    header small { color: var(--muted); }
+    header button { margin-left: auto; }
+
+    #chat { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+    .msg { max-width: 85%; padding: 10px 14px; border-radius: 14px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; }
+    .msg.user { align-self: flex-end; background: var(--user); color: #fff; border-bottom-right-radius: 4px; }
+    .msg.bot { align-self: flex-start; background: var(--bot); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+    .msg.error { align-self: flex-start; background: #fee2e2; color: #991b1b; }
+    .msg code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 4px; }
+    .tools { align-self: flex-start; display: flex; flex-wrap: wrap; gap: 6px; }
+    .tools span { font-size: 12px; color: var(--muted); background: var(--card); border: 1px solid var(--border); padding: 3px 9px; border-radius: 99px; }
+
+    .welcome { text-align: center; color: var(--muted); margin: auto 0; }
+    .welcome h2 { color: var(--text); margin-bottom: 4px; }
+    .chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 16px; }
+    .chips button { background: var(--card); color: var(--text); border: 1px solid var(--border); }
+
+    .typing span { display: inline-block; width: 7px; height: 7px; margin: 0 2px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite; }
+    .typing span:nth-child(2) { animation-delay: .2s; } .typing span:nth-child(3) { animation-delay: .4s; }
+    @keyframes blink { 0%, 80%, 100% { opacity: .2; } 40% { opacity: 1; } }
+
+    form { display: flex; gap: 8px; padding: 12px 16px 16px; border-top: 1px solid var(--border); }
+    textarea { flex: 1; resize: none; height: 46px; max-height: 140px; padding: 12px; font: inherit; color: var(--text); background: var(--card); border: 1px solid var(--border); border-radius: 12px; outline: none; }
+    textarea:focus { border-color: var(--accent); }
+    button { font: inherit; font-size: 14px; padding: 8px 14px; border-radius: 10px; border: none; cursor: pointer; background: var(--accent); color: #fff; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="logo">🤖</div>
+      <div>
+        <h1>Sheet AI Agent</h1>
+        <small>gpt-oss:120b · Google Sheets</small>
+      </div>
+      <button class="ghost" id="clearBtn">Nayi chat</button>
+    </header>
+
+    <div id="chat"></div>
+
+    <form id="form">
+      <textarea id="input" placeholder="Kuch bhi poochiye… (Enter = bhejo, Shift+Enter = nayi line)"></textarea>
+      <button id="sendBtn" type="submit">Bhejo</button>
+    </form>
+  </div>
+
+  <script>
+    // ── State: poori baat-cheet yahan rehti hai, har baar server ko bhejte hain ──
+    let history = [];
+    let busy = false;
+
+    const chatBox = document.getElementById('chat');
+    const input = document.getElementById('input');
+    const sendBtn = document.getElementById('sendBtn');
+
+    const SUGGESTIONS = [
+      'Meri spreadsheet mein kaun-kaun si sheets hain?',
+      'Pehli sheet ka summary do',
+      '"Expenses" naam ki sheet banao: Date, Item, Amount',
+      'Sabse zyada amount wali row dikhao',
+    ];
+
+    // ── Welcome screen ──
+    function showWelcome() {
+      chatBox.innerHTML = `
+        <div class="welcome">
+          <h2>Namaste! 👋</h2>
+          <div>Main aapki Google Sheet padh, likh aur samajh sakta hoon.</div>
+          <div class="chips"></div>
+        </div>`;
+      const chips = chatBox.querySelector('.chips');
+      SUGGESTIONS.forEach(text => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = text;
+        b.onclick = () => send(text);
+        chips.appendChild(b);
+      });
+    }
+
+    // ── Chat mein ek bubble jodna ──
+    function addMessage(text, type) {
+      chatBox.querySelector('.welcome')?.remove();
+      const div = document.createElement('div');
+      div.className = 'msg ' + type;
+      div.innerHTML = type === 'bot' ? formatText(text) : escapeHtml(text);
+      chatBox.appendChild(div);
+      chatBox.scrollTop = chatBox.scrollHeight;
+      return div;
+    }
+
+    // AI ne kaun-se tools chalaye, woh chhote chips mein dikhate hain
+    function addToolChips(messages) {
+      const names = messages.filter(m => m.role === 'tool').map(m => m.tool_name);
+      if (!names.length) return;
+      const div = document.createElement('div');
+      div.className = 'tools';
+      div.innerHTML = names.map(n => `<span>🛠 ${escapeHtml(n)}</span>`).join('');
+      chatBox.appendChild(div);
+    }
+
+    // ── Message bhejna ──
+    function send(text) {
+      text = text.trim();
+      if (!text || busy) return;
+
+      addMessage(text, 'user');
+      history.push({ role: 'user', content: text });
+      input.value = '';
+      setBusy(true);
+      const typing = addMessage('', 'bot');
+      typing.innerHTML = '<span class="typing"><span></span><span></span><span></span></span>';
+
+      // google.script.run = browser se Code.gs ka function call karna
+      google.script.run
+        .withSuccessHandler(result => {
+          typing.remove();
+          history = history.concat(result.messages);
+          addToolChips(result.messages);
+          addMessage(result.reply || '(khaali jawab)', 'bot');
+          setBusy(false);
+        })
+        .withFailureHandler(err => {
+          typing.remove();
+          history.pop(); // fail hua sawaal history se hata do, dobara pooch sakte ho
+          addMessage('⚠️ ' + err.message, 'error');
+          setBusy(false);
+        })
+        .chat(history);
+    }
+
+    function setBusy(value) {
+      busy = value;
+      sendBtn.disabled = value;
+      sendBtn.textContent = value ? 'Soch raha hoon…' : 'Bhejo';
+      if (!value) input.focus();
+    }
+
+    // ── Chhote helpers ──
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    // Thoda sa markdown: **bold** aur `code`
+    function formatText(s) {
+      return escapeHtml(s)
+        .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+        .replace(/`([^`]+)`/g, '<code>$1</code>');
+    }
+
+    // ── Events ──
+    document.getElementById('form').addEventListener('submit', e => {
+      e.preventDefault();
+      send(input.value);
+    });
+
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        send(input.value);
+      }
+    });
+
+    document.getElementById('clearBtn').addEventListener('click', () => {
+      if (busy) return;
+      history = [];
+      showWelcome();
+    });
+
+    showWelcome();
+    input.focus();
+  </script>
+</body>
+</html>
