@@ -19,7 +19,7 @@
     header .logo { width: 36px; height: 36px; border-radius: 10px; background: var(--accent); color: #fff; display: grid; place-items: center; font-size: 20px; }
     header h1 { font-size: 17px; margin: 0; }
     header small { color: var(--muted); }
-    header button { margin-left: auto; }
+    header .actions { margin-left: auto; display: flex; gap: 6px; }
 
     #chat { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
     .msg { max-width: 85%; padding: 10px 14px; border-radius: 14px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; }
@@ -52,10 +52,13 @@
     <header>
       <div class="logo">🤖</div>
       <div>
-        <h1>Sheet AI Agent</h1>
-        <small>gpt-oss:120b · Google Sheets</small>
+        <h1 id="title">Virtual Employee</h1>
+        <small>Orders · Payments · Stock · Staff · Reports</small>
       </div>
-      <button class="ghost" id="clearBtn">Nayi chat</button>
+      <div class="actions">
+        <button class="ghost" id="setupBtn" title="Business sheets aur roz ka trigger banao">⚙️ Setup</button>
+        <button class="ghost" id="clearBtn">Nayi chat</button>
+      </div>
     </header>
 
     <div id="chat"></div>
@@ -76,10 +79,14 @@
     const sendBtn = document.getElementById('sendBtn');
 
     const SUGGESTIONS = [
-      'Meri spreadsheet mein kaun-kaun si sheets hain?',
-      'Pehli sheet ka summary do',
-      '"Expenses" naam ki sheet banao: Date, Item, Amount',
-      'Sabse zyada amount wali row dikhao',
+      'Aaj ki report do',
+      'Ramesh ka order: 10 kg cheeni, 45 rate, 200 diye',
+      'Kiska payment baaki hai?',
+      'Ramesh ne 500 de diye',
+      'Aaj Suresh chutti par hai, baaki sab aaye',
+      'Kaunsa stock khatam hone wala hai?',
+      'Is mahine ki salary batao',
+      'Meri roz ki duties dikhao',
     ];
 
     // ── Welcome screen ──
@@ -87,7 +94,9 @@
       chatBox.innerHTML = `
         <div class="welcome">
           <h2>Namaste! 👋</h2>
-          <div>Main aapki Google Sheet padh, likh aur samajh sakta hoon.</div>
+          <div>Main aapka virtual employee hoon. Order likhna, payment ka hisaab, stock,<br>
+          attendance, salary aur roz ki report: bas boliye.</div>
+          <div style="margin-top:6px;font-size:13px">Pehli baar? Upar <b>⚙️ Setup</b> dabaiye.</div>
           <div class="chips"></div>
         </div>`;
       const chips = chatBox.querySelector('.chips');
@@ -182,6 +191,22 @@
         send(input.value);
       }
     });
+
+    // Setup: business sheets + roz ka trigger banana (Setup.gs → setupBusiness)
+    document.getElementById('setupBtn').addEventListener('click', () => {
+      if (busy) return;
+      setBusy(true);
+      google.script.run
+        .withSuccessHandler(msg => { addMessage(msg, 'bot'); setBusy(false); })
+        .withFailureHandler(err => { addMessage('⚠️ ' + err.message, 'error'); setBusy(false); })
+        .setupBusiness();
+    });
+
+    // Business ka naam header mein dikhana
+    google.script.run.withSuccessHandler(info => {
+      document.getElementById('title').textContent = info.business;
+      document.title = info.business + ' — Virtual Employee';
+    }).getInfo();
 
     document.getElementById('clearBtn').addEventListener('click', () => {
       if (busy) return;

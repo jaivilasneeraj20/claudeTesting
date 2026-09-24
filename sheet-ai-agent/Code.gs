@@ -1,84 +1,144 @@
 /**
- * Sheet AI Agent — Google Apps Script backend
+ * Virtual Employee — AI ka dimaag (agent loop)
  *
- * Flow:
- *   1. Browser (Index.html) poori chat history `chat()` ko bhejta hai
- *   2. `chat()` Ollama Cloud se poochta hai: "ab kya karu?"
- *   3. Agar AI koi tool maange (jaise read_sheet), hum woh function chalate hain
- *      aur result wapas AI ko dete hain
- *   4. Jab AI ko aur tool nahi chahiye, final jawab browser ko lauta dete hain
+ * Files:
+ *   Code.gs      → yeh file: web app + AI se baat-cheet ka loop
+ *   Business.gs  → dukaan ke kaam: order, payment, stock, attendance, salary, report, email
+ *   Duties.gs    → roz ke fixed kaam (jaise subah 9 baje report) jo employee khud karta hai
+ *   Tools.gs     → kisi bhi sheet ko padhne/likhne ke general tools
+ *   Setup.gs     → ek click mein saari sheets banana
+ *   Helpers.gs   → chhote kaam ke functions
  *
- * Setup: Project Settings → Script Properties mein OLLAMA_API_KEY daalo.
- * (Optional) SHEET_ID daalo agar script kisi sheet se bound nahi hai.
+ * Har tool ek object hai: { name, description, params, required, run }
+ *   - name/description/params → AI ko batate hain ki tool kya karta hai
+ *   - run → asli JavaScript function jo sheet mein kaam karta hai
  */
 
 const MODEL = 'gpt-oss:120b';
 const OLLAMA_URL = 'https://ollama.com/api/chat';
-const MAX_STEPS = 10;      // ek sawaal mein AI zyada se zyada kitni baar tool chala sakta hai
-const MAX_ROWS_READ = 300; // AI ko ek baar mein kitni rows dikhani hain
-
-const SYSTEM_PROMPT = `You are a helpful AI agent that works inside the user's Google Spreadsheet.
-Reply in the same language the user writes in (Hindi, Hinglish or English).
-Use the tools to look at real data before answering — never guess what is in a sheet.
-Before changing data, first read the sheet so you know its columns.
-Before deleting anything, ask the user to confirm.
-After writing data, tell the user exactly what you changed.
-Keep answers short. Use simple lists instead of markdown tables.
-Today's date: ${Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd')}`;
+const MAX_STEPS = 12; // ek kaam mein AI zyada se zyada kitni baar tool chala sakta hai
 
 
-/* ───────────────────────── Web app entry ───────────────────────── */
+/* ───────────────────────── Web app ───────────────────────── */
 
 function doGet() {
   return HtmlService.createHtmlOutputFromFile('Index')
-    .setTitle('Sheet AI Agent')
+    .setTitle(businessName_() + ' — Virtual Employee')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
+/** Browser (Index.html) se call hota hai */
+function chat(history) {
+  return runAgent_(history, false);
+}
 
-/* ───────────────────────── Agent loop ───────────────────────── */
+/** Browser ke naam dikhane ke liye */
+function getInfo() {
+  return { business: businessName_(), model: MODEL };
+}
+
+
+/* ───────────────────────── Sabse main part: agent loop ───────────────────────── */
 
 /**
- * Browser se call hota hai.
- * @param {Array} history  [{role:'user'|'assistant'|'tool', content, ...}]
- * @return {{reply: string, messages: Array}}  naye messages jo history mein jodne hain
+ * @param {Array} history      [{role:'user'|'assistant'|'tool', content}]
+ * @param {boolean} scheduled  true = trigger se khud chal raha hai (koi chat nahi kar raha)
+ * @return {{reply: string, messages: Array}}
  */
-function chat(history) {
-  const messages = [{ role: 'system', content: SYSTEM_PROMPT }].concat(history);
+function runAgent_(history, scheduled) {
+  const tools = allTools_();
+  const messages = [{ role: 'system', content: systemPrompt_(scheduled) }].concat(history);
   const newMessages = [];
 
   for (let step = 0; step < MAX_STEPS; step++) {
-    const reply = callOllama_(messages);
+    const reply = callOllama_(messages, tools);
     messages.push(reply);
     newMessages.push(reply);
 
-    // AI ne koi tool nahi maanga → yahi final jawab hai
+    // AI ko koi tool nahi chahiye → yahi final jawab hai
     if (!reply.tool_calls || reply.tool_calls.length === 0) {
       return { reply: reply.content, messages: newMessages };
     }
 
-    // AI ne tool maange → har ek chalao aur result wapas do
+    // AI ne tool maange → har ek chalao aur result wapas AI ko do
     reply.tool_calls.forEach(function (call) {
       const name = call.function.name;
-      const result = runTool_(name, call.function.arguments);
+      const result = runTool_(tools, name, call.function.arguments);
       const toolMessage = { role: 'tool', tool_name: name, content: JSON.stringify(result) };
       messages.push(toolMessage);
       newMessages.push(toolMessage);
     });
   }
 
-  return { reply: 'Maaf kijiye, kaam bahut lamba ho gaya. Sawaal thoda chhota karke poochiye.', messages: newMessages };
+  return { reply: 'Kaam bahut lamba ho gaya, beech mein ruk gaya. Thoda chhota karke boliye.', messages: newMessages };
 }
 
-function callOllama_(messages) {
-  const apiKey = PropertiesService.getScriptProperties().getProperty('OLLAMA_API_KEY');
+/** Employee ke saare tools ek jagah */
+function allTools_() {
+  return businessTools_().concat(dutyTools_(), sheetTools_());
+}
+
+function systemPrompt_(scheduled) {
+  const now = new Date();
+  let prompt = `You are the virtual employee of "${businessName_()}". You manage the owner's business in Google Sheets like a careful, honest office assistant.
+Reply in the owner's language (Hindi, Hinglish or English). Keep replies short and clear. Money is in ₹.
+
+Business sheets and the tools for them:
+- Orders (sales + payments): add_order, record_payment, pending_payments, send_payment_reminders
+- Stock (inventory): update_stock, low_stock
+- Staff + Attendance: mark_attendance, salary_report
+- Reports: business_report, send_email
+- Duties (your recurring jobs): add_duty, list_duties, update_duty, remove_duty
+- Log: record of everything you changed
+For any other sheet, use list_sheets, read_sheet, search_rows, append_row, write_cells, create_sheet, delete_row.
+
+Rules:
+- Prefer the business tools over raw sheet edits: they keep stock, balance and the log correct.
+- Never make up numbers. Get them from tools.
+- After changing data, say exactly what changed.
+- Use simple lists, not markdown tables.
+- If a tool says a sheet is missing, tell the owner to press the "Setup" button.
+
+Today: ${fmtDate_(now, 'yyyy-MM-dd (EEEE)')}, time ${fmtDate_(now, 'HH:mm')}. Owner email: ${ownerEmail_()}`;
+
+  if (scheduled) {
+    prompt += `
+
+You are running a scheduled duty by yourself. Nobody is chatting, so do not ask questions: do the job fully,
+then write a short report for the owner (it will be emailed to them automatically).`;
+  } else {
+    prompt += `
+
+If important details are missing (like customer, item or quantity), ask once, briefly.
+Ask the owner to confirm before deleting anything or sending emails to customers.`;
+  }
+  return prompt;
+}
+
+
+/* ───────────────────────── Ollama se baat ───────────────────────── */
+
+function callOllama_(messages, tools) {
+  const apiKey = prop_('OLLAMA_API_KEY');
   if (!apiKey) throw new Error('OLLAMA_API_KEY nahi mili. Project Settings → Script Properties mein daaliye.');
+
+  // Hamare tools ko Ollama ke format mein badalna
+  const toolSchemas = tools.map(function (t) {
+    return {
+      type: 'function',
+      function: {
+        name: t.name,
+        description: t.description,
+        parameters: { type: 'object', properties: t.params || {}, required: t.required || [] },
+      },
+    };
+  });
 
   const response = UrlFetchApp.fetch(OLLAMA_URL, {
     method: 'post',
     contentType: 'application/json',
     headers: { Authorization: 'Bearer ' + apiKey },
-    payload: JSON.stringify({ model: MODEL, messages: messages, tools: TOOLS, stream: false }),
+    payload: JSON.stringify({ model: MODEL, messages: messages, tools: toolSchemas, stream: false }),
     muteHttpExceptions: true,
   });
 
@@ -92,147 +152,19 @@ function callOllama_(messages) {
   return clean;
 }
 
-function runTool_(name, args) {
+function runTool_(tools, name, args) {
+  const tool = tools.filter(function (t) { return t.name === name; })[0];
+  if (!tool) return { error: 'Aisa koi tool nahi hai: ' + name };
   try {
     if (typeof args === 'string') args = JSON.parse(args || '{}');
-    const fn = TOOL_FUNCTIONS[name];
-    if (!fn) return { error: 'Unknown tool: ' + name };
-    return fn(args || {});
+    return tool.run(args || {});
   } catch (err) {
-    return { error: err.message }; // error bhi AI ko batate hain, taaki woh khud theek kar sake
+    return { error: err.message }; // error bhi AI ko batate hain taaki woh khud theek kar sake
   }
 }
 
 
-/* ───────────────────────── Tools (AI ke haath-pair) ───────────────────────── */
-
-// 1) AI ko batate hain ki kaun-kaun se tools hain (JSON schema)
-const TOOLS = [
-  tool_('list_sheets', 'List all sheets (tabs) with their row and column counts.', {}),
-
-  tool_('read_sheet', 'Read values from a sheet. Without range it reads all data. Row 1 is usually headers.', {
-    sheet: { type: 'string', description: 'Sheet name' },
-    range: { type: 'string', description: 'Optional A1 range like "A1:D20"' },
-  }, ['sheet']),
-
-  tool_('search_rows', 'Find rows that contain some text (case-insensitive). Returns row numbers.', {
-    sheet: { type: 'string' },
-    text: { type: 'string', description: 'Text to search for' },
-  }, ['sheet', 'text']),
-
-  tool_('append_row', 'Add one new row at the bottom of a sheet.', {
-    sheet: { type: 'string' },
-    values: { type: 'array', items: { type: 'string' }, description: 'Cell values in column order' },
-  }, ['sheet', 'values']),
-
-  tool_('write_cells', 'Write a 2D block of values starting at a cell. Formulas like "=SUM(B2:B9)" are allowed.', {
-    sheet: { type: 'string' },
-    start_cell: { type: 'string', description: 'Top-left cell, e.g. "B2"' },
-    values: { type: 'array', items: { type: 'array', items: { type: 'string' } }, description: 'Rows of values' },
-  }, ['sheet', 'start_cell', 'values']),
-
-  tool_('create_sheet', 'Create a new sheet (tab), optionally with a header row.', {
-    name: { type: 'string' },
-    headers: { type: 'array', items: { type: 'string' } },
-  }, ['name']),
-
-  tool_('delete_row', 'Delete one row by its row number. Only use after the user confirms.', {
-    sheet: { type: 'string' },
-    row: { type: 'integer', description: 'Row number (1 = first row)' },
-  }, ['sheet', 'row']),
-];
-
-function tool_(name, description, properties, required) {
-  return {
-    type: 'function',
-    function: {
-      name: name,
-      description: description,
-      parameters: { type: 'object', properties: properties, required: required || [] },
-    },
-  };
-}
-
-// 2) Asli kaam karne wale functions — naam upar wale TOOLS se match hone chahiye
-const TOOL_FUNCTIONS = {
-  list_sheets: function () {
-    return getSpreadsheet_().getSheets().map(function (s) {
-      return { name: s.getName(), rows: s.getLastRow(), columns: s.getLastColumn() };
-    });
-  },
-
-  read_sheet: function (a) {
-    const sh = getSheet_(a.sheet);
-    const range = a.range ? sh.getRange(a.range) : sh.getDataRange();
-    const values = range.getDisplayValues();
-    return {
-      range: range.getA1Notation(),
-      rows: values.slice(0, MAX_ROWS_READ),
-      note: values.length > MAX_ROWS_READ ? 'Only first ' + MAX_ROWS_READ + ' rows shown. Use a smaller range.' : undefined,
-    };
-  },
-
-  search_rows: function (a) {
-    const values = getSheet_(a.sheet).getDataRange().getDisplayValues();
-    const needle = String(a.text).toLowerCase();
-    const matches = [];
-    values.forEach(function (row, i) {
-      if (row.join(' ').toLowerCase().indexOf(needle) !== -1) matches.push({ row: i + 1, values: row });
-    });
-    return { headers: values[0], matches: matches.slice(0, 100), total: matches.length };
-  },
-
-  append_row: function (a) {
-    const sh = getSheet_(a.sheet);
-    sh.appendRow(a.values);
-    return { ok: true, row: sh.getLastRow() };
-  },
-
-  write_cells: function (a) {
-    const values = a.values;
-    const width = Math.max.apply(null, values.map(function (r) { return r.length; }));
-    const rows = values.map(function (r) { // har row ki length barabar honi chahiye
-      return r.concat(new Array(width - r.length).fill(''));
-    });
-    const range = getSheet_(a.sheet).getRange(a.start_cell).offset(0, 0, rows.length, width);
-    range.setValues(rows);
-    return { ok: true, range: range.getA1Notation() };
-  },
-
-  create_sheet: function (a) {
-    const sh = getSpreadsheet_().insertSheet(a.name);
-    if (a.headers && a.headers.length) {
-      sh.appendRow(a.headers);
-      sh.getRange(1, 1, 1, a.headers.length).setFontWeight('bold');
-      sh.setFrozenRows(1);
-    }
-    return { ok: true, name: a.name };
-  },
-
-  delete_row: function (a) {
-    getSheet_(a.sheet).deleteRow(a.row);
-    return { ok: true, deleted_row: a.row };
-  },
-};
-
-
-/* ───────────────────────── Helpers ───────────────────────── */
-
-function getSpreadsheet_() {
-  const id = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
-  const ss = id ? SpreadsheetApp.openById(id) : SpreadsheetApp.getActiveSpreadsheet();
-  if (!ss) throw new Error('Spreadsheet nahi mili. Script Properties mein SHEET_ID daaliye.');
-  return ss;
-}
-
-function getSheet_(name) {
-  const sh = getSpreadsheet_().getSheetByName(name);
-  if (!sh) throw new Error('Sheet "' + name + '" nahi mili. Pehle list_sheets chalaiye.');
-  return sh;
-}
-
-/** Editor se ek baar chala ke check karo ki API key aur sheet sahi hai. */
+/** Editor se chala ke check karo ki API key aur sheet sahi hai */
 function testAgent() {
-  const result = chat([{ role: 'user', content: 'Is spreadsheet mein kaun-kaun si sheets hain?' }]);
-  Logger.log(result.reply);
+  Logger.log(runAgent_([{ role: 'user', content: 'Aaj ki business report do' }], false).reply);
 }
