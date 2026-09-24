@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign in · Nexus CRM</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⬡</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+  <script src="/static/vendor/lucide.min.js"></script>
+  <script>try { document.documentElement.dataset.theme = localStorage.getItem("theme") || "dark"; } catch {}</script>
+</head>
+<body>
+  <div class="bg-glow"></div>
+
+  <div class="auth">
+    <!-- left: brand panel -->
+    <section class="auth-hero">
+      <div class="brand">
+        <div class="logo"><i data-lucide="hexagon"></i></div>
+        <div><b>Nexus</b><span>CRM Suite</span></div>
+      </div>
+
+      <div class="hero-copy">
+        <h2>Grow every relationship,<br /><span class="grad-text">close every deal.</span></h2>
+        <p>Contacts, companies, deals and tasks, all in one fast and beautiful workspace.</p>
+        <ul>
+          <li><i data-lucide="kanban"></i>Drag &amp; drop sales pipeline</li>
+          <li><i data-lucide="line-chart"></i>Live revenue dashboard</li>
+          <li><i data-lucide="bell-ring"></i>Never miss a follow-up</li>
+        </ul>
+      </div>
+
+      <div class="hero-card">
+        <div class="kpi-mini"><small>Revenue won</small><b>₹12.1 L</b><span><i data-lucide="trending-up"></i>+18%</span></div>
+        <div class="kpi-mini"><small>Win rate</small><b>75%</b><span><i data-lucide="trending-up"></i>+6%</span></div>
+      </div>
+    </section>
+
+    <!-- right: form -->
+    <section class="auth-form">
+      <form id="authForm" class="auth-box">
+        <h1 id="heading">Welcome back 👋</h1>
+        <p class="muted" id="subheading">Sign in to continue to your workspace.</p>
+
+        <div class="chips auth-tabs">
+          <button type="button" data-mode="login" class="on">Sign in</button>
+          <button type="button" data-mode="signup">Sign up</button>
+        </div>
+
+        <label id="nameField" hidden>Full name
+          <div class="field"><i data-lucide="user"></i><input name="name" placeholder="Aarav Sharma" autocomplete="name" /></div>
+        </label>
+        <label>Email
+          <div class="field"><i data-lucide="mail"></i><input name="email" type="email" placeholder="you@company.com" autocomplete="email" required /></div>
+        </label>
+        <label>Password
+          <div class="field"><i data-lucide="lock"></i>
+            <input name="password" type="password" placeholder="At least 6 characters" autocomplete="current-password" required minlength="6" />
+            <button type="button" class="eye" id="eye" title="Show password"><i data-lucide="eye"></i></button>
+          </div>
+        </label>
+
+        <p class="auth-error" id="error"></p>
+
+        <button type="submit" class="btn btn-primary auth-submit" id="submit">Sign in<i data-lucide="arrow-right"></i></button>
+
+        <p class="muted switch">
+          <span id="switchText">Don't have an account?</span>
+          <a id="switchLink">Create one</a>
+        </p>
+      </form>
+    </section>
+  </div>
+
+  <script>
+    const $ = (s) => document.querySelector(s);
+    let mode = "login";
+
+    const TEXT = {
+      login:  { h: "Welcome back 👋", sub: "Sign in to continue to your workspace.", btn: "Sign in", sw: "Don't have an account?", link: "Create one" },
+      signup: { h: "Create your account ✨", sub: "Start managing your sales in under a minute.", btn: "Create account", sw: "Already have an account?", link: "Sign in" },
+    };
+
+    function setMode(m) {
+      mode = m;
+      const t = TEXT[m];
+      $("#heading").textContent = t.h;
+      $("#subheading").textContent = t.sub;
+      $("#submit").innerHTML = `${t.btn}<i data-lucide="arrow-right"></i>`;
+      $("#switchText").textContent = t.sw;
+      $("#switchLink").textContent = t.link;
+      $("#nameField").hidden = m === "login";
+      $("[name=name]").required = m === "signup";
+      $("[name=password]").autocomplete = m === "login" ? "current-password" : "new-password";
+      $("#error").textContent = "";
+      document.querySelectorAll("[data-mode]").forEach((b) => b.classList.toggle("on", b.dataset.mode === m));
+      lucide.createIcons();
+    }
+
+    document.querySelectorAll("[data-mode]").forEach((b) => (b.onclick = () => setMode(b.dataset.mode)));
+    $("#switchLink").onclick = () => setMode(mode === "login" ? "signup" : "login");
+
+    $("#eye").onclick = () => {
+      const p = $("[name=password]");
+      p.type = p.type === "password" ? "text" : "password";
+      $("#eye").innerHTML = `<i data-lucide="${p.type === "password" ? "eye" : "eye-off"}"></i>`;
+      lucide.createIcons();
+    };
+
+    $("#authForm").onsubmit = async (e) => {
+      e.preventDefault();
+      const data = Object.fromEntries(new FormData(e.target));
+      $("#submit").disabled = true;
+      $("#error").textContent = "";
+      try {
+        const res = await fetch("/api/auth/" + mode, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(data),
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.detail || "Something went wrong");
+        location.href = "/";
+      } catch (err) {
+        $("#error").textContent = err.message;
+      } finally {
+        $("#submit").disabled = false;
+      }
+    };
+
+    if (location.hash === "#signup") setMode("signup");
+    lucide.createIcons();
+  </script>
+</body>
+</html>

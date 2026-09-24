@@ -71,6 +71,7 @@ async function api(path, method = "GET", body) {
     headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
   });
+  if (res.status === 401) location.href = "/login";
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(typeof err.detail === "string" ? err.detail : "Request failed");
@@ -442,5 +443,18 @@ let saved = "dark";
 try { saved = localStorage.getItem("theme") || "dark"; } catch {}
 document.documentElement.dataset.theme = saved;
 $("#themeBtn").innerHTML = `<i data-lucide="${saved === "dark" ? "sun" : "moon"}"></i>`;
+$("#logoutBtn").onclick = async () => {
+  await api("auth/logout", "POST");
+  location.href = "/login";
+};
+
+// show the logged-in user in the sidebar
+api("me").then((u) => {
+  $("#meName").textContent = u.name;
+  $("#meEmail").textContent = u.email;
+  $("#meAvatar").textContent = initials(u.name);
+  $("#meAvatar").style.setProperty("--h", hue(u.name));
+});
+
 window.onhashchange = () => { const v = location.hash.slice(1); if (VIEWS[v] && v !== current) go(v); };
 go(VIEWS[location.hash.slice(1)] ? location.hash.slice(1) : "dashboard");

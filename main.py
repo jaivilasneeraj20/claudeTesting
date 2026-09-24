@@ -2,12 +2,17 @@
 
 Run:  uvicorn main:app --reload   ->  open http://127.0.0.1:8000
 """
+import hashlib
+import hmac
+import os
+import secrets
+import time
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import ValidationError
 from fastapi.staticfiles import StaticFiles
 from sqlmodel import Field, Session, SQLModel, create_engine, func, or_, select
@@ -56,6 +61,13 @@ class Task(Base, table=True):
     contact_id: Optional[int] = Field(default=None, foreign_key="contact.id")
 
 
+class User(Base, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
+    email: str = Field(unique=True, index=True)
+    password_hash: str
+
+
 MODELS = {"companies": Company, "contacts": Contact, "deals": Deal, "tasks": Task}
 SEARCH = {"companies": "name", "contacts": "name", "deals": "title", "tasks": "title"}
 
@@ -75,6 +87,104 @@ app = FastAPI(title="Nexus CRM", lifespan=lifespan)
 @app.exception_handler(ValueError)
 def bad_input(_, exc):
     return JSONResponse({"detail": "Invalid data: " + str(exc).splitlines()[0]}, status_code=422)
+
+# ---------------------------------------------------------------- auth
+# Passwords: salted PBKDF2. Login: a signed cookie "user_id.expiry.signature".
+# Only the Python standard library is used, no extra packages.
+
+SECRET_FILE = "secret.key"
+if not os.path.exists(SECRET_FILE):
+    with open(SECRET_FILE, "w") as f:
+        f.write(secrets.token_hex(32))
+SECRET = os.environ.get("CRM_SECRET") or open(SECRET_FILE).read().strip()
+COOKIE, MAX_AGE = "crm_session", 7 * 24 * 3600  # stay logged in for 7 days
+PUBLIC = ("/login", "/static/", "/api/auth/", "/docs", "/openapi.json")
+
+
+def hash_password(password: str, salt: str | None = None) -> str:
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 200_000).hex()
+    return f"{salt}${digest}"
+
+
+def check_password(password: str, stored: str) -> bool:
+    return hmac.compare_digest(hash_password(password, stored.split("$")[0]), stored)
+
+
+def sign(value: str) -> str:
+    return hmac.new(SECRET.encode(), value.encode(), hashlib.sha256).hexdigest()
+
+
+def make_token(user_id: int) -> str:
+    payload = f"{user_id}.{int(time.time()) + MAX_AGE}"
+    return f"{payload}.{sign(payload)}"
+
+
+def user_id_from(request: Request) -> Optional[int]:
+    try:
+        uid, exp, sig = request.cookies.get(COOKIE, "").split(".")
+        if hmac.compare_digest(sig, sign(f"{uid}.{exp}")) and int(exp) > time.time():
+            return int(uid)
+    except ValueError:
+        pass
+    return None
+
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    path = request.url.path
+    if path.startswith(PUBLIC) or user_id_from(request):
+        return await call_next(request)
+    if path.startswith("/api/"):
+        return JSONResponse({"detail": "Please log in"}, status_code=401)
+    return RedirectResponse("/login")
+
+
+def login_response(user: User) -> JSONResponse:
+    res = JSONResponse({"id": user.id, "name": user.name, "email": user.email})
+    res.set_cookie(COOKIE, make_token(user.id), max_age=MAX_AGE, httponly=True, samesite="lax")
+    return res
+
+
+@app.post("/api/auth/signup", tags=["auth"])
+def signup(data: dict):
+    name, email = str(data.get("name", "")).strip(), str(data.get("email", "")).strip().lower()
+    password = str(data.get("password", ""))
+    if not name or "@" not in email:
+        raise HTTPException(400, "Please enter your name and a valid email")
+    if len(password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters")
+    with Session(engine) as s:
+        if s.exec(select(User).where(User.email == email)).first():
+            raise HTTPException(400, "An account with this email already exists")
+        user = User(name=name, email=email, password_hash=hash_password(password))
+        s.add(user); s.commit(); s.refresh(user)
+        return login_response(user)
+
+
+@app.post("/api/auth/login", tags=["auth"])
+def login(data: dict):
+    email = str(data.get("email", "")).strip().lower()
+    with Session(engine) as s:
+        user = s.exec(select(User).where(User.email == email)).first()
+        if not user or not check_password(str(data.get("password", "")), user.password_hash):
+            raise HTTPException(401, "Wrong email or password")
+        return login_response(user)
+
+
+@app.post("/api/auth/logout", tags=["auth"])
+def logout(response: Response):
+    response.delete_cookie(COOKIE)
+    return {"ok": True}
+
+
+@app.get("/api/me", tags=["auth"])
+def me(request: Request):
+    with Session(engine) as s:
+        user = s.get(User, user_id_from(request))
+        if not user:
+            raise HTTPException(401, "Please log in")
+        return {"id": user.id, "name": user.name, "email": user.email}
 
 # ---------------------------------------------------------------- generic CRUD
 # One small factory gives every model full list/search/create/update/delete.
@@ -243,3 +353,8 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 @app.get("/", include_in_schema=False)
 def index():
     return FileResponse("static/index.html")
+
+
+@app.get("/login", include_in_schema=False)
+def login_page(request: Request):
+    return RedirectResponse("/") if user_id_from(request) else FileResponse("static/login.html")

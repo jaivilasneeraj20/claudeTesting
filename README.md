@@ -3,6 +3,7 @@
 Python **FastAPI** mein bana ek simple lekin powerful CRM, modern sidebar UI ke saath.
 
 ## Features
+- **Login / Sign up**: pehli baar khologe to login page aayega. "Sign up" se account banao, phir usi email/password se login karo. Password safe tareeke se (hash karke) save hota hai, aur 7 din tak login yaad rehta hai.
 - **Dashboard**: KPI cards (open pipeline, revenue won, win rate, contacts), revenue chart, contacts-by-status chart, pipeline-by-stage chart, upcoming tasks aur recent deals
 - **Contacts**: search, status filter, company link, har contact ke deals ka total
 - **Companies**: card view, har company ke contacts, deals aur won revenue ke saath
@@ -21,6 +22,7 @@ Browser mein kholo: http://127.0.0.1:8000. Pehli baar chalane par demo data apne
 ## Structure
 ```
 main.py            # poora backend: models, generic CRUD, dashboard stats, search
+static/login.html  # login / sign up page
 static/index.html  # layout (sidebar, topbar, modal)
 static/style.css   # design system (dark/light theme)
 static/app.js      # frontend logic, no build step
