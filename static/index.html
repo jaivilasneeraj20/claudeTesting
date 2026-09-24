@@ -8,87 +8,94 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/style.css" />
-  <script src="/static/vendor/chart.umd.js"></script>
-  <script src="/static/vendor/lucide.min.js"></script>
 </head>
 <body>
   <div class="bg-glow"></div>
+  <canvas id="confetti"></canvas>
 
-  <!-- ============ SIDEBAR ============ -->
-  <aside class="sidebar" id="sidebar">
+  <!-- ================= SIDEBAR ================= -->
+  <aside class="sidebar">
     <div class="brand">
       <div class="logo"><i data-lucide="hexagon"></i></div>
       <div><b>Nexus</b><span>CRM Suite</span></div>
+      <button class="icon-btn sm collapse-btn" id="collapseBtn" title="Collapse sidebar"><i data-lucide="chevrons-left"></i></button>
     </div>
 
-    <nav id="nav">
-      <p class="nav-label">Main</p>
-      <a data-view="dashboard"><i data-lucide="layout-dashboard"></i><span>Dashboard</span></a>
-      <a data-view="contacts"><i data-lucide="users"></i><span>Contacts</span><em id="cnt-contacts"></em></a>
-      <a data-view="companies"><i data-lucide="building-2"></i><span>Companies</span><em id="cnt-companies"></em></a>
-      <p class="nav-label">Sales</p>
-      <a data-view="deals"><i data-lucide="kanban"></i><span>Deals Pipeline</span><em id="cnt-deals"></em></a>
-      <a data-view="tasks"><i data-lucide="check-circle-2"></i><span>Tasks</span><em id="cnt-tasks"></em></a>
-    </nav>
+    <nav id="nav"></nav>
 
-    <div class="side-card">
-      <i data-lucide="sparkles"></i>
-      <b>Close more deals</b>
-      <p>Drag deals across the pipeline to update their stage instantly.</p>
-      <button class="btn btn-primary sm" onclick="go('deals')">Open pipeline</button>
+    <div class="target-card">
+      <small>This month's target</small>
+      <b id="sideTarget">—</b>
+      <div class="progress"><i id="sideTargetBar" style="width:0"></i></div>
     </div>
 
     <div class="user">
-      <div class="avatar" id="meAvatar" style="--h:260"></div>
+      <div class="avatar" id="meAvatar"></div>
       <div class="me"><b id="meName"></b><span id="meEmail"></span></div>
-      <button class="icon-btn" id="themeBtn" title="Toggle theme"><i data-lucide="moon"></i></button>
-      <button class="icon-btn danger" id="logoutBtn" title="Log out"><i data-lucide="log-out"></i></button>
+      <button class="icon-btn sm danger" id="logoutBtn" title="Log out"><i data-lucide="log-out"></i></button>
     </div>
   </aside>
+  <div class="scrim" onclick="document.body.classList.remove('nav-open')"></div>
 
-  <!-- ============ MAIN ============ -->
+  <!-- ================= MAIN ================= -->
   <main class="main">
     <header class="topbar">
       <button class="icon-btn menu-btn" onclick="document.body.classList.toggle('nav-open')"><i data-lucide="menu"></i></button>
       <div>
-        <h1 id="title">Dashboard</h1>
-        <p id="subtitle" class="muted"></p>
+        <h1 id="title"></h1>
+        <p id="subtitle"></p>
       </div>
-      <div class="search" onclick="openSearch()">
-        <i data-lucide="search"></i><span>Search anything…</span><kbd>Ctrl K</kbd>
+
+      <div class="search" onclick="openPalette()">
+        <i data-lucide="search"></i><span>Search or jump to…</span><kbd>Ctrl K</kbd>
       </div>
-      <button class="btn btn-primary" id="addBtn"><i data-lucide="plus"></i><span>Add New</span></button>
+
+      <button class="icon-btn" id="themeBtn" title="Toggle theme"><i data-lucide="sun"></i></button>
+
+      <div class="relative">
+        <button class="icon-btn bell" id="bellBtn" title="Notifications"><i data-lucide="bell"></i><span class="dot" id="bellDot"></span></button>
+        <div class="pop" id="bellPop" hidden></div>
+      </div>
+
+      <div class="relative">
+        <button class="btn btn-primary new-btn" id="newBtn"><i data-lucide="plus"></i><span>New</span></button>
+        <div class="pop small" id="newPop" hidden></div>
+      </div>
     </header>
 
     <section id="view" class="view"></section>
   </main>
 
-  <div class="scrim" onclick="document.body.classList.remove('nav-open')"></div>
+  <!-- ================= OVERLAYS ================= -->
+  <div class="drawer-bg" onclick="closeDrawer()"></div>
+  <aside class="drawer" id="drawer"></aside>
 
-  <!-- ============ MODAL ============ -->
-  <div class="modal" id="modal">
-    <form class="modal-box" id="form">
-      <div class="modal-head">
-        <h3 id="modalTitle"></h3>
-        <button type="button" class="icon-btn" onclick="closeModal()"><i data-lucide="x"></i></button>
-      </div>
-      <div class="form-grid" id="formFields"></div>
-      <div class="modal-foot">
-        <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button>
-        <button type="submit" class="btn btn-primary"><i data-lucide="check"></i>Save</button>
-      </div>
-    </form>
-  </div>
+  <div class="modal" id="modal"><div class="modal-box" id="modalBox"></div></div>
 
-  <!-- ============ SEARCH PALETTE ============ -->
   <div class="modal" id="palette">
     <div class="modal-box palette">
-      <div class="palette-input"><i data-lucide="search"></i><input id="paletteInput" placeholder="Search contacts, companies, deals, tasks…" autocomplete="off" /></div>
-      <div id="paletteResults"></div>
+      <div class="palette-input"><i data-lucide="search"></i><input id="paletteInput" placeholder="Type a command or search…" autocomplete="off" /></div>
+      <div id="paletteList"></div>
+      <div class="palette-foot"><span>↑↓ to move</span><span>↵ to open</span><span>esc to close</span></div>
     </div>
   </div>
 
   <div id="toasts"></div>
-  <script src="/static/app.js"></script>
+
+  <!-- libraries (stored locally, work offline) -->
+  <script src="/static/vendor/chart.umd.js"></script>
+  <script src="/static/vendor/lucide.min.js"></script>
+
+  <!-- our code: plain functions, one file per page -->
+  <script src="/static/js/helpers.js"></script>
+  <script src="/static/js/forms.js"></script>
+  <script src="/static/js/dashboard.js"></script>
+  <script src="/static/js/contacts.js"></script>
+  <script src="/static/js/companies.js"></script>
+  <script src="/static/js/deals.js"></script>
+  <script src="/static/js/tasks.js"></script>
+  <script src="/static/js/activity.js"></script>
+  <script src="/static/js/settings.js"></script>
+  <script src="/static/js/app.js"></script>
 </body>
 </html>
